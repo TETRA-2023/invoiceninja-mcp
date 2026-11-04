@@ -19,7 +19,7 @@ npm run start:http   # node dist/http.js (HTTP, requires build)
 
 There are no tests, linter, or formatter configured. `npm run typecheck` is the only verification gate — run it after changes.
 
-Required env to run: `INVOICE_NINJA_URL` and `INVOICE_NINJA_TOKEN` (see `.env.example`). Note: nothing in the code loads a `.env` file automatically — env vars must be set in the shell, via the MCP host config, or with `node --env-file=.env`.
+Required env to run: `INVOICE_NINJA_URL` and `INVOICE_NINJA_TOKEN` (see `.env.example`). `Dockerfile` builds the HTTP server image; `.github/workflows/image.yaml` publishes it to Harbor on a `v*` tag matching `package.json`. Note: nothing in the code loads a `.env` file automatically — env vars must be set in the shell, via the MCP host config, or with `node --env-file=.env`.
 
 ## Architecture
 
@@ -37,6 +37,7 @@ Both entry points call the same `createServer()`; transport is the only differen
 
 ## Key conventions (follow these when editing `tools.ts`)
 
+- **Deny list and safe mode:** every tool goes through the local `register` wrapper, which skips names in `cfg.disabledTools` (`INVOICE_NINJA_DISABLED_TOOLS`) and, with `cfg.safeMode` (`INVOICE_NINJA_SAFE_MODE`), the `SAFE_MODE_DISABLED` set (`in_invoice_action`, `in_quote_action`, `in_create_payment`); safe mode also narrows `in_task_action` to archive/restore. Register new tools with `register(...)`, never `server.registerTool(...)` directly. ALVIREQ runs the server with writes on and safe mode on, with its own approval gate in front.
 - **Read vs write gating:** read tools register unconditionally. `registerTools` returns early (`if (!cfg.allowWrites) return`) before defining any write tool, so writes are physically absent unless `INVOICE_NINJA_ALLOW_WRITES=true`. Keep new write tools below that guard.
 - **Tool annotations:** read tools get `{ readOnlyHint: true }`. Writes get `WRITE` (`destructiveHint: false`) or `DESTRUCTIVE` (`destructiveHint: true`, for lifecycle/delete actions) so hosts can prompt before executing.
 - **List projection:** list handlers project rows down to a small `*_FIELDS` allowlist (`project()`) to keep model context lean. Full records come from the `in_get_*` tools. When adding a field to a list, add it to the relevant `*_FIELDS` constant.

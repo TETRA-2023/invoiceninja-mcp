@@ -15,6 +15,15 @@ export interface Config {
   secret?: string;
   /** When false (default), all write/mutating tools are disabled. Opt-in only. */
   allowWrites: boolean;
+  /**
+   * Safe mode: writes are on, but nothing is sent or settled. Leaves out in_invoice_action, in_quote_action and
+   * in_create_payment, and narrows in_task_action to archive and restore. Hosts with their own approval gate
+   * (ALVIREQ) run with writes on and safe mode on, so drafts, clients, expenses and time entries work while
+   * emailing, marking paid, cancelling and deleting stay in Invoice Ninja.
+   */
+  safeMode: boolean;
+  /** Tool names that are never registered (INVOICE_NINJA_DISABLED_TOOLS, comma-separated). */
+  disabledTools: Set<string>;
   /** Per-request timeout in milliseconds. */
   timeoutMs: number;
   /** Hard cap on per_page to avoid dumping huge payloads into the model context. */
@@ -51,6 +60,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     token,
     secret: env.INVOICE_NINJA_SECRET?.trim() || undefined,
     allowWrites: bool(env.INVOICE_NINJA_ALLOW_WRITES, false),
+    safeMode: bool(env.INVOICE_NINJA_SAFE_MODE, false),
+    disabledTools: new Set(
+      (env.INVOICE_NINJA_DISABLED_TOOLS ?? "")
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean),
+    ),
     timeoutMs: Number(env.INVOICE_NINJA_TIMEOUT_MS ?? 30_000),
     maxPerPage: Number(env.INVOICE_NINJA_MAX_PER_PAGE ?? 100),
   };
