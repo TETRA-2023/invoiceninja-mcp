@@ -3,7 +3,7 @@ import { loadConfig } from "./config.js";
 import { registerTools } from "./tools.js";
 
 export const SERVER_NAME = "invoiceninja-mcp";
-export const SERVER_VERSION = "0.2.0";
+export const SERVER_VERSION = "0.2.1";
 
 /** Build a fully-wired McpServer instance from environment configuration. */
 export function createServer(): McpServer {
