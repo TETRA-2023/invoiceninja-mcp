@@ -1,6 +1,6 @@
 {
   "name": "invoiceninja-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Self-hosted MCP server for Invoice Ninja (v5). Sovereignty-friendly, no third-party SaaS bridge.",
   "homepage": "https://halvic.ch",
   "author": "Halvic Labs <hire@halvic.ch> (https://halvic.ch)",
@@ -24,11 +24,20 @@
     "start:http": "node dist/http.js",
     "dev": "tsx src/index.ts",
     "dev:http": "tsx src/http.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
   },
-  "keywords": ["mcp", "model-context-protocol", "invoice-ninja", "invoicing", "claude"],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "invoice-ninja",
+    "invoicing",
+    "claude"
+  ],
   "license": "MIT",
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.4.3"
@@ -37,5 +46,8 @@
     "@types/node": "^22.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"
+  },
+  "overrides": {
+    "proxy-addr": "^2.0.8"
   }
 }

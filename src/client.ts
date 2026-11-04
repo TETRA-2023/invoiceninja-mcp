@@ -182,8 +182,26 @@ export class InvoiceNinjaClient {
   }
 
   /** Health probe — hits a cheap, always-present route. */
-  async ping(): Promise<{ ok: boolean; sampleCount: number }> {
+  /**
+   * A read-only check: one client row, then the token's company (id and name) where the instance tells. The company
+   * is optional so an older Invoice Ninja without POST /companies/current still pings.
+   */
+  async ping(): Promise<{ ok: boolean; sampleCount: number; company?: { id: string; name: string } }> {
     const res = await this.list("clients", { perPage: 1 });
-    return { ok: true, sampleCount: Array.isArray(res.data) ? res.data.length : 0 };
+    const out: { ok: boolean; sampleCount: number; company?: { id: string; name: string } } = {
+      ok: true,
+      sampleCount: Array.isArray(res.data) ? res.data.length : 0,
+    };
+    try {
+      // POST, but it only reads: Invoice Ninja returns the company the token belongs to.
+      const current = await this.request<{ data?: { id?: unknown; settings?: { name?: unknown } } }>("POST", "/companies/current");
+      const id = typeof current?.data?.id === "string" ? current.data.id : "";
+      const name = typeof current?.data?.settings?.name === "string" ? current.data.settings.name.trim() : "";
+      if (id || name) out.company = { id, name };
+    } catch (err) {
+      // A refused token already failed on the client list; anything else leaves the company out.
+      if (err instanceof InvoiceNinjaError && (err.status === 401 || err.status === 403)) throw err;
+    }
+    return out;
   }
 }

@@ -46,8 +46,8 @@ List results are projected to key fields to keep model context lean; use the
 `in_invoice_action`, `in_quote_action` and `in_create_payment`, and narrows `in_task_action` to
 `archive` and `restore`: the model prepares drafts, clients, expenses, tasks and time entries, and
 people send, settle, cancel and delete in Invoice Ninja. `INVOICE_NINJA_DISABLED_TOOLS` names
-further tools to leave out, comma-separated. `in_ping` reports `safe_mode` next to `writes_enabled`.
-ALVIREQ instances run the server this way, as a sidecar with their own approval gate in front.
+further tools to leave out, comma-separated. `in_ping` reports `safe_mode` next to `writes_enabled`,
+and the token's company (`company: {id, name}`) where the instance tells.
 
 ## Time tracking
 
@@ -142,6 +142,35 @@ invoicing-mcp.example.ch {
 Always set `MCP_BEARER_TOKEN` for remote exposure — clients send
 `Authorization: Bearer <token>`.
 
+### Credentials per request (several accounts, one server)
+
+Behind the bearer, a request may carry its own Invoice Ninja credentials, so one server serves any
+number of companies or people. ALVIREQ runs it this way next to each instance: the administrator
+connects the company token on the plugin page, people may connect their own, and every request
+carries the token of the connection in use.
+
+| Header | Value |
+|---|---|
+| `X-Invoice-Ninja-Url` | Base URL; `https://`, or `http://` on `127.0.0.1`/`localhost`. No user name, password, query; `/api/v1` is dropped |
+| `X-Invoice-Ninja-Token` | API token |
+| `X-Invoice-Ninja-Safe-Mode` | `false` allows sending and settling; any other value keeps safe mode on |
+
+Each header overrides its environment variable for that request only. The headers are read only when
+`MCP_BEARER_TOKEN` is set and matches; an open endpoint ignores them, so nobody unauthenticated can
+choose where a token goes. `INVOICE_NINJA_SAFE_MODE=true` in the environment is a floor a request
+cannot lower, and `INVOICE_NINJA_ALLOW_WRITES` still decides whether write tools exist at all.
+
+With `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true` the address and token come only from the
+request: the environment needs neither, the server refuses to start without `MCP_BEARER_TOKEN`, and
+a request without them gets `400 {"error":"missing_credentials"}`. A refused address gets
+`400 {"error":"invalid_url"}`, a repeated or malformed header `400 {"error":"invalid_header"}`;
+nothing is sent to Invoice Ninja in either case. Tokens are never logged.
+
+```bash
+docker run --rm -p 8787:8787 -e HOST=0.0.0.0 -e INVOICE_NINJA_ALLOW_WRITES=true \
+  -e INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true -e MCP_BEARER_TOKEN=... invoiceninja-mcp
+```
+
 ## Safety model
 
 - Writes are **off by default**. Read-only is the safe baseline.
@@ -155,14 +184,19 @@ Always set `MCP_BEARER_TOKEN` for remote exposure — clients send
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `INVOICE_NINJA_URL` | — (required) | Instance base URL, no `/api/v1` |
-| `INVOICE_NINJA_TOKEN` | — (required) | Company API token |
+| `INVOICE_NINJA_URL` | — (required¹) | Instance base URL, no `/api/v1` |
+| `INVOICE_NINJA_TOKEN` | — (required¹) | Company API token |
 | `INVOICE_NINJA_SECRET` | — | Optional `X-Api-Secret` |
 | `INVOICE_NINJA_ALLOW_WRITES` | `false` | Enable mutating tools |
+| `INVOICE_NINJA_SAFE_MODE` | `false` | With writes on, leave out sending, settling, cancelling, deleting and payments; a floor for requests |
+| `INVOICE_NINJA_DISABLED_TOOLS` | — | Tool names never registered, comma-separated |
+| `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS` | `false` | HTTP only: address and token only from request headers (needs `MCP_BEARER_TOKEN`) |
 | `INVOICE_NINJA_MAX_PER_PAGE` | `100` | Cap on rows per list call |
 | `INVOICE_NINJA_TIMEOUT_MS` | `30000` | Per-request timeout |
 | `PORT` / `HOST` | `8787` / `127.0.0.1` | HTTP transport bind |
-| `MCP_BEARER_TOKEN` | — | Bearer auth for HTTP transport |
+| `MCP_BEARER_TOKEN` | — | Bearer auth for HTTP transport; credential headers are read only behind it |
+
+¹ Not with `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true`, and a request's headers override them.
 
 ## Alternative: bake it into Laravel
 
