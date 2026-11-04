@@ -42,6 +42,13 @@ blog post [Automate invoicing with MCP: my Invoice Ninja server](https://halvic.
 List results are projected to key fields to keep model context lean; use the
 `in_get_*` tools for full records.
 
+**Safe mode and a deny list.** `INVOICE_NINJA_SAFE_MODE=true` keeps writes on but leaves out
+`in_invoice_action`, `in_quote_action` and `in_create_payment`, and narrows `in_task_action` to
+`archive` and `restore`: the model prepares drafts, clients, expenses, tasks and time entries, and
+people send, settle, cancel and delete in Invoice Ninja. `INVOICE_NINJA_DISABLED_TOOLS` names
+further tools to leave out, comma-separated. `in_ping` reports `safe_mode` next to `writes_enabled`.
+ALVIREQ instances run the server this way, as a sidecar with their own approval gate in front.
+
 ## Time tracking
 
 Invoice Ninja tracks work time through **Tasks** (a task is a time entry billed at
@@ -103,6 +110,19 @@ claude mcp add invoiceninja -- node /abs/path/to/invoiceninja-mcp/dist/index.js
 ```
 
 (set the env vars in the shell or via `--env` flags)
+
+### Container
+
+```bash
+docker build -t invoiceninja-mcp .
+docker run --rm -p 8787:8787 -e HOST=0.0.0.0 -e INVOICE_NINJA_URL=https://invoicing.example.ch \
+  -e INVOICE_NINJA_TOKEN=... -e INVOICE_NINJA_ALLOW_WRITES=true -e INVOICE_NINJA_SAFE_MODE=true \
+  -e MCP_BEARER_TOKEN=... invoiceninja-mcp
+```
+
+The image runs `node dist/http.js` as a non-root user with a read-only root filesystem and answers
+`/healthz`. A tag `vX.Y.Z` publishes `harbor.halviclabs.ch/alvireq/invoiceninja-mcp:X.Y.Z` through
+`.github/workflows/image.yaml` (the version must match `package.json`; a published version is refused).
 
 ### Remote (streamable HTTP, self-hosted)
 

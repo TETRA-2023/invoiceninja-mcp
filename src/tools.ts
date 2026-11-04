@@ -105,9 +105,37 @@ function toListOpts(a: Json, extra?: ListOptions["extra"]): ListOptions {
   };
 }
 
+/** Tools safe mode leaves out: they send, settle, cancel or delete documents, or record money. */
+export const SAFE_MODE_DISABLED = ["in_invoice_action", "in_quote_action", "in_create_payment"] as const;
+
+/** The tool names a configuration leaves out: the deny list plus safe mode's set. Unknown names are reported, not fatal. */
+export function disabledToolNames(cfg: Pick<Config, "safeMode" | "disabledTools">): Set<string> {
+  const names = new Set(cfg.disabledTools);
+  if (cfg.safeMode) for (const n of SAFE_MODE_DISABLED) names.add(n);
+  return names;
+}
+
+const warnedUnknown = new Set<string>();
+
 export function registerTools(server: McpServer, cfg: Config): void {
   const client = new InvoiceNinjaClient(cfg);
   const RO = { readOnlyHint: true } as const;
+  const disabled = disabledToolNames(cfg);
+  const known = new Set<string>();
+  /** registerTool, unless the configuration leaves this tool out. */
+  const register: McpServer["registerTool"] = ((name: string, def: unknown, handler: unknown) => {
+    known.add(name);
+    if (disabled.has(name)) return undefined as never;
+    return (server.registerTool as (n: string, d: unknown, h: unknown) => unknown)(name, def, handler) as never;
+  }) as McpServer["registerTool"];
+  // Stateless HTTP builds a server per request, so each unknown name is reported once per process.
+  queueMicrotask(() => {
+    for (const n of disabled)
+      if (!known.has(n) && !warnedUnknown.has(n)) {
+        warnedUnknown.add(n);
+        process.stderr.write(`invoiceninja-mcp: INVOICE_NINJA_DISABLED_TOOLS names an unknown tool "${n}"\n`);
+      }
+  });
 
   /**
    * PUT a task while preserving its display number. Invoice Ninja assigns a
@@ -125,7 +153,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
   }
 
   // ---------------------------------------------------------------- health
-  server.registerTool(
+  register(
     "in_ping",
     {
       title: "Test connection",
@@ -135,7 +163,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
     async () => {
       try {
-        return ok({ ...(await client.ping()), instance: cfg.baseUrl, writes_enabled: cfg.allowWrites });
+        return ok({ ...(await client.ping()), instance: cfg.baseUrl, writes_enabled: cfg.allowWrites, safe_mode: cfg.safeMode });
       } catch (e) {
         return fail(e);
       }
@@ -143,7 +171,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
   );
 
   // ---------------------------------------------------------------- clients
-  server.registerTool(
+  register(
     "in_list_clients",
     { title: "List clients", description: "List clients with optional search.", inputSchema: listShape, annotations: RO },
     async (a) => {
@@ -156,7 +184,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_get_client",
     {
       title: "Get client",
@@ -177,7 +205,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
   );
 
   // --------------------------------------------------------------- invoices
-  server.registerTool(
+  register(
     "in_list_invoices",
     {
       title: "List invoices",
@@ -213,7 +241,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_get_invoice",
     {
       title: "Get invoice",
@@ -234,7 +262,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
   );
 
   // ----------------------------------------------------------------- quotes
-  server.registerTool(
+  register(
     "in_list_quotes",
     { title: "List quotes", description: "List quotes with optional search.", inputSchema: listShape, annotations: RO },
     async (a) => {
@@ -247,7 +275,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_get_quote",
     {
       title: "Get quote",
@@ -268,7 +296,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
   );
 
   // --------------------------------------------------------------- payments
-  server.registerTool(
+  register(
     "in_list_payments",
     {
       title: "List payments",
@@ -287,7 +315,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
   );
 
   // --------------------------------------------------------------- products
-  server.registerTool(
+  register(
     "in_list_products",
     { title: "List products", description: "List products / catalogue items.", inputSchema: listShape, annotations: RO },
     async (a) => {
@@ -301,7 +329,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
   );
 
   // --------------------------------------------------------------- expenses
-  server.registerTool(
+  register(
     "in_list_expenses",
     { title: "List expenses", description: "List expenses with optional search.", inputSchema: listShape, annotations: RO },
     async (a) => {
@@ -314,7 +342,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_list_vendors",
     { title: "List vendors", description: "List vendors (expense counterparties) with optional search.", inputSchema: listShape, annotations: RO },
     async (a) => {
@@ -327,7 +355,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_list_expense_categories",
     { title: "List expense categories", description: "List expense categories.", inputSchema: listShape, annotations: RO },
     async (a) => {
@@ -341,7 +369,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
   );
 
   // ------------------------------------------------------------ AR overview
-  server.registerTool(
+  register(
     "in_outstanding_summary",
     {
       title: "Accounts-receivable summary",
@@ -389,7 +417,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
   );
 
   // ------------------------------------------------------ tasks (time entries)
-  server.registerTool(
+  register(
     "in_list_tasks",
     {
       title: "List tasks (time entries)",
@@ -416,7 +444,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_get_task",
     {
       title: "Get task",
@@ -436,7 +464,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_list_projects",
     {
       title: "List projects",
@@ -473,7 +501,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     })
     .passthrough();
 
-  server.registerTool(
+  register(
     "in_create_client",
     {
       title: "Create client",
@@ -498,7 +526,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_update_client",
     {
       title: "Update client",
@@ -564,7 +592,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     })
     .passthrough();
 
-  server.registerTool(
+  register(
     "in_create_invoice",
     {
       title: "Create invoice",
@@ -597,7 +625,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_update_invoice",
     {
       title: "Update invoice",
@@ -635,7 +663,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_upload_document",
     {
       title: "Attach document",
@@ -667,7 +695,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_invoice_action",
     {
       title: "Invoice lifecycle action",
@@ -693,7 +721,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_quote_action",
     {
       title: "Quote lifecycle action",
@@ -719,7 +747,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_create_payment",
     {
       title: "Record payment",
@@ -745,7 +773,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_create_quote",
     {
       title: "Create quote",
@@ -768,7 +796,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_create_product",
     {
       title: "Create product",
@@ -790,7 +818,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_create_expense",
     {
       title: "Create expense",
@@ -822,7 +850,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_update_expense",
     {
       title: "Update expense",
@@ -861,7 +889,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_create_vendor",
     {
       title: "Create vendor",
@@ -883,7 +911,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_create_expense_category",
     {
       title: "Create expense category",
@@ -918,7 +946,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     return rows.map((r) => (r.description ? [r.start, r.end, r.description] : [r.start, r.end]));
   }
 
-  server.registerTool(
+  register(
     "in_create_task",
     {
       title: "Create task",
@@ -952,7 +980,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_update_task",
     {
       title: "Update task",
@@ -1018,7 +1046,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_start_task",
     {
       title: "Start task timer",
@@ -1043,7 +1071,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_stop_task",
     {
       title: "Stop task timer",
@@ -1067,7 +1095,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_log_time",
     {
       title: "Log time entry",
@@ -1098,15 +1126,22 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_task_action",
     {
       title: "Task lifecycle action",
-      description:
-        "Apply an action to a task: archive, restore, delete, or invoice (creates a draft invoice from the tracked time; the task must belong to a client).",
+      description: cfg.safeMode
+        ? "Apply an action to a task: archive or restore. (Safe mode: deleting a task and invoicing tracked time are left to Invoice Ninja; use in_create_invoice with task_id lines for a draft.)"
+        : "Apply an action to a task: archive, restore, delete, or invoice (creates a draft invoice from the tracked time; the task must belong to a client).",
       inputSchema: {
         id: z.string(),
-        action: z.enum(["archive", "restore", "delete", "invoice"]),
+        // Safe mode narrows the schema the model sees; the handler keeps the full type.
+        action: (cfg.safeMode ? z.enum(["archive", "restore"]) : z.enum(["archive", "restore", "delete", "invoice"])) as unknown as z.ZodEnum<{
+          archive: "archive";
+          restore: "restore";
+          delete: "delete";
+          invoice: "invoice";
+        }>,
       },
       annotations: DESTRUCTIVE,
     },
@@ -1145,7 +1180,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
-  server.registerTool(
+  register(
     "in_create_project",
     {
       title: "Create project",
