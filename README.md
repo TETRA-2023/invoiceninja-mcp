@@ -1,4 +1,4 @@
-# invoiceninja-mcp
+# Invoice Ninja MCP Server
 
 A **self-hosted MCP server for Invoice Ninja v5** — built to talk only to *your*
 instance, with no third-party SaaS bridge in the data path. Runs locally over
