@@ -664,38 +664,6 @@ export function registerTools(server: McpServer, cfg: Config): void {
   );
 
   register(
-    "in_upload_document",
-    {
-      title: "Attach document",
-      description:
-        "Attach a local file (e.g. a worklog PDF) to an entity. The file is read from the filesystem the MCP " +
-        "server runs on. Attached documents appear on the record and can be shown in the client portal / " +
-        "included in emails depending on company settings.",
-      inputSchema: {
-        entity: z
-          .enum(["invoices", "quotes", "clients", "tasks", "projects", "expenses", "payments", "products"])
-          .describe("Entity collection the record belongs to."),
-        id: z.string().describe("Record id (hashed string id)."),
-        file_path: z.string().describe("Absolute path of the file to attach."),
-        file_name: z.string().optional().describe("Name to store the document under (default: basename)."),
-      },
-      annotations: WRITE,
-    },
-    async (a) => {
-      try {
-        const res = (await client.uploadDocument<Json>(a.entity, a.id, a.file_path, a.file_name)).data;
-        const docs = Array.isArray(res?.documents) ? (res.documents as Json[]) : [];
-        return ok({
-          attached: true,
-          documents: docs.map((d) => ({ id: d.id, name: d.name, size: d.size, hash: d.hash })),
-        });
-      } catch (e) {
-        return fail(e);
-      }
-    },
-  );
-
-  register(
     "in_invoice_action",
     {
       title: "Invoice lifecycle action",
@@ -824,7 +792,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
       title: "Create expense",
       description:
         "Record an expense. currency_id sets the expense currency (defaults to the company currency); " +
-        "common ids: 1=USD, 3=EUR, 17=CHF. Attach the source receipt afterwards with in_upload_document.",
+        "common ids: 1=USD, 3=EUR, 17=CHF. Attach the source receipt in Invoice Ninja.",
       inputSchema: {
         amount: z.number().describe("Amount in the expense currency."),
         date: z.string().optional().describe("Y-m-d expense date."),

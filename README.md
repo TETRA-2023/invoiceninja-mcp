@@ -120,9 +120,9 @@ docker run --rm -p 8787:8787 -e HOST=0.0.0.0 -e INVOICE_NINJA_URL=https://invoic
   -e MCP_BEARER_TOKEN=... invoiceninja-mcp
 ```
 
-The image runs `node dist/http.js` as a non-root user with a read-only root filesystem and answers
-`/healthz`. A tag `vX.Y.Z` publishes `harbor.halviclabs.ch/alvireq/invoiceninja-mcp:X.Y.Z` through
-`.github/workflows/image.yaml` (the version must match `package.json`; a published version is refused).
+The image runs `node dist/http.js` as a non-root user (UID 10001), writes nothing to disk (run it with
+a read-only root filesystem) and answers `/healthz`. CI publishes `ghcr.io/tetra-2023/invoiceninja-mcp`
+with the tags `main` and `sha-<7>` from every merge to `main`, after a container smoke test; pin the digest.
 
 ### Remote (streamable HTTP, self-hosted)
 
@@ -142,38 +142,14 @@ invoicing-mcp.example.ch {
 Always set `MCP_BEARER_TOKEN` for remote exposure — clients send
 `Authorization: Bearer <token>`.
 
-### Credentials per request (several accounts, one server)
-
-Behind the bearer, a request may carry its own Invoice Ninja credentials, so one server serves any
-number of companies or people. ALVIREQ runs it this way next to each instance: the administrator
-connects the company token on the plugin page, people may connect their own, and every request
-carries the token of the connection in use.
-
-| Header | Value |
-|---|---|
-| `X-Invoice-Ninja-Url` | Base URL; `https://`, or `http://` on `127.0.0.1`/`localhost`. No user name, password, query; `/api/v1` is dropped |
-| `X-Invoice-Ninja-Token` | API token |
-| `X-Invoice-Ninja-Safe-Mode` | `false` allows sending and settling; any other value keeps safe mode on |
-
-Each header overrides its environment variable for that request only. The headers are read only when
-`MCP_BEARER_TOKEN` is set and matches; an open endpoint ignores them, so nobody unauthenticated can
-choose where a token goes. `INVOICE_NINJA_SAFE_MODE=true` in the environment is a floor a request
-cannot lower, and `INVOICE_NINJA_ALLOW_WRITES` still decides whether write tools exist at all.
-
-With `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true` the address and token come only from the
-request: the environment needs neither, the server refuses to start without `MCP_BEARER_TOKEN`, and
-a request without them gets `400 {"error":"missing_credentials"}`. A refused address gets
-`400 {"error":"invalid_url"}`, a repeated or malformed header `400 {"error":"invalid_header"}`;
-nothing is sent to Invoice Ninja in either case. Tokens are never logged.
-
-```bash
-docker run --rm -p 8787:8787 -e HOST=0.0.0.0 -e INVOICE_NINJA_ALLOW_WRITES=true \
-  -e INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true -e MCP_BEARER_TOKEN=... invoiceninja-mcp
-```
-
 ## Safety model
 
 - Writes are **off by default**. Read-only is the safe baseline.
+- The Invoice Ninja address and token come **only from the environment**; request headers never
+  change the configuration.
+- No tool reads the server's filesystem (there is no document-upload tool).
+- Over HTTP, the server refuses to start without `MCP_BEARER_TOKEN` unless it listens on the loopback;
+  the bearer is compared in constant time.
 - Write tools carry `destructiveHint` annotations so the host can prompt before
   executing lifecycle actions.
 - Reminder: **updating a client requires resending the full `contacts` array**
@@ -184,19 +160,16 @@ docker run --rm -p 8787:8787 -e HOST=0.0.0.0 -e INVOICE_NINJA_ALLOW_WRITES=true 
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `INVOICE_NINJA_URL` | — (required¹) | Instance base URL, no `/api/v1` |
-| `INVOICE_NINJA_TOKEN` | — (required¹) | Company API token |
+| `INVOICE_NINJA_URL` | — (required) | Instance base URL, no `/api/v1` (an internal `http://` address is fine) |
+| `INVOICE_NINJA_TOKEN` | — (required) | Company API token |
 | `INVOICE_NINJA_SECRET` | — | Optional `X-Api-Secret` |
 | `INVOICE_NINJA_ALLOW_WRITES` | `false` | Enable mutating tools |
-| `INVOICE_NINJA_SAFE_MODE` | `false` | With writes on, leave out sending, settling, cancelling, deleting and payments; a floor for requests |
+| `INVOICE_NINJA_SAFE_MODE` | `false` | With writes on, leave out sending, settling, cancelling, deleting and payments |
 | `INVOICE_NINJA_DISABLED_TOOLS` | — | Tool names never registered, comma-separated |
-| `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS` | `false` | HTTP only: address and token only from request headers (needs `MCP_BEARER_TOKEN`) |
 | `INVOICE_NINJA_MAX_PER_PAGE` | `100` | Cap on rows per list call |
 | `INVOICE_NINJA_TIMEOUT_MS` | `30000` | Per-request timeout |
 | `PORT` / `HOST` | `8787` / `127.0.0.1` | HTTP transport bind |
-| `MCP_BEARER_TOKEN` | — | Bearer auth for HTTP transport; credential headers are read only behind it |
-
-¹ Not with `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true`, and a request's headers override them.
+| `MCP_BEARER_TOKEN` | — | Bearer auth for HTTP transport; required unless `HOST` is a loopback address |
 
 ## Alternative: bake it into Laravel
 
@@ -211,11 +184,33 @@ in-process.
 
 - Recurring invoices + subscriptions
 - Per-project time & budget reporting (hours logged vs budgeted_hours)
-- Document/attachment upload (multipart)
 - Tax-period reporting tool (quarterly VAT)
 - `outputSchema` on tools for structured-content clients
 
-## Author
+## Origin & Acknowledgments
+
+This repository began as a copy of
+[halviclabs/invoiceninja-mcp](https://github.com/halviclabs/invoiceninja-mcp) at commit
+**6e51f1d** (v0.3.0, 2026-11-04), MIT License, Copyright (c) 2026 Halvic Labs. All credit for the
+Invoice Ninja API mapping, the tools, the safe mode and the stateless HTTP transport belongs to that
+project.
+
+This fork is **disconnected from upstream**. It is deployed by TETRA as a single-instance server behind
+an MCP gateway and differs from upstream on purpose:
+
+- configuration from the environment only (the per-request `X-Invoice-Ninja-*` credential headers and
+  `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS` are removed);
+- no `in_upload_document` tool;
+- bearer required off the loopback, compared in constant time;
+- image published to `ghcr.io/tetra-2023/invoiceninja-mcp` by this repo's CI.
+
+Upstream changes are picked up manually when needed.
+
+## License
+
+MIT (see [`LICENSE`](LICENSE)).
+
+## Original author
 
 Built by [Halvic Labs](https://halvic.ch) — a Swiss AI-engineering workshop.
 More on building MCP servers: [Write your first MCP server](https://halvic.ch/en/blog/write-your-first-mcp-server).
