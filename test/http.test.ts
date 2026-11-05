@@ -7,46 +7,49 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { createHandler } from "../src/httpApp.js";
 
 const BEARER = "test-bearer";
-const COMPANIES: Record<string, { id: string; name: string }> = {
-  "token-a": { id: "aaa", name: "Company A" },
-  "token-b": { id: "bbb", name: "Company B" },
-  "token-env": { id: "eee", name: "Env Company" },
-};
+const ENV_TOKEN = "token-env";
 
-/** A fake Invoice Ninja: the clients list and the current company, per token; anything else 404. */
-let ninja: Server;
-let ninjaUrl = "";
-const seen: string[] = [];
+/** A fake Invoice Ninja that records every token it receives. */
+async function fakeNinja(company: string): Promise<{ server: Server; url: string; seen: string[] }> {
+  const seen: string[] = [];
+  const server = createServer((req, res) => {
+    const token = String(req.headers["x-api-token"] ?? "");
+    seen.push(token);
+    res.setHeader("Content-Type", "application/json");
+    if (token !== ENV_TOKEN) return res.writeHead(401).end(JSON.stringify({ message: "Invalid token" }));
+    const path = (req.url ?? "").split("?")[0];
+    if (req.method === "GET" && path === "/api/v1/clients") return res.end(JSON.stringify({ data: [] }));
+    if (req.method === "POST" && path === "/api/v1/companies/current") return res.end(JSON.stringify({ data: { id: "c1", settings: { name: company } } }));
+    res.writeHead(404).end(JSON.stringify({ message: "not here" }));
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  return { server, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, seen };
+}
+
+let ninja: Awaited<ReturnType<typeof fakeNinja>>;
+/** Another host named in a request header: it must never receive anything. */
+let elsewhere: Awaited<ReturnType<typeof fakeNinja>>;
 const servers: Server[] = [];
 
 before(async () => {
-  ninja = createServer((req, res) => {
-    const token = String(req.headers["x-api-token"] ?? "");
-    seen.push(token);
-    const company = COMPANIES[token];
-    res.setHeader("Content-Type", "application/json");
-    if (!company) return res.writeHead(401).end(JSON.stringify({ message: "Invalid token" }));
-    const path = (req.url ?? "").split("?")[0];
-    if (req.method === "GET" && path === "/api/v1/clients") return res.end(JSON.stringify({ data: [] }));
-    if (req.method === "POST" && path === "/api/v1/companies/current") return res.end(JSON.stringify({ data: { id: company.id, settings: { name: company.name } } }));
-    res.writeHead(404).end(JSON.stringify({ message: "not here" }));
-  });
-  await new Promise<void>((r) => ninja.listen(0, "127.0.0.1", r));
-  ninjaUrl = `http://127.0.0.1:${(ninja.address() as AddressInfo).port}`;
+  ninja = await fakeNinja("Env Company");
+  elsewhere = await fakeNinja("Elsewhere");
 });
 
 after(async () => {
-  for (const s of [...servers, ninja]) await new Promise<void>((r) => s.close(() => r()));
+  for (const s of [...servers, ninja.server, elsewhere.server]) await new Promise<void>((r) => s.close(() => r()));
 });
 
-async function mcpServer(opts: { bearer?: string; env: NodeJS.ProcessEnv }): Promise<string> {
-  const s = createServer(createHandler({ bearer: opts.bearer, env: opts.env }));
+const baseEnv = () => ({ INVOICE_NINJA_URL: ninja.url, INVOICE_NINJA_TOKEN: ENV_TOKEN });
+
+async function mcpServer(env: NodeJS.ProcessEnv, bearer: string | undefined = BEARER): Promise<string> {
+  const s = createServer(createHandler({ bearer, env }));
   await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
   servers.push(s);
   return `http://127.0.0.1:${(s.address() as AddressInfo).port}/mcp`;
 }
 
-async function connect(endpoint: string, headers: Record<string, string>) {
+async function connect(endpoint: string, headers: Record<string, string> = { Authorization: `Bearer ${BEARER}` }) {
   const client = new Client({ name: "test", version: "0" });
   await client.connect(new StreamableHTTPClientTransport(new URL(endpoint), { requestInit: { headers } }));
   return client;
@@ -57,98 +60,67 @@ const pingText = async (client: Client) => {
   return { text: r.content[0]!.text, isError: r.isError === true };
 };
 
-const REQUIRED = { INVOICE_NINJA_ALLOW_WRITES: "true", INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS: "true" };
-const creds = (token: string, extra: Record<string, string> = {}) => ({
-  Authorization: `Bearer ${BEARER}`,
-  "X-Invoice-Ninja-Url": ninjaUrl,
-  "X-Invoice-Ninja-Token": token,
-  ...extra,
-});
+const toolNames = async (env: NodeJS.ProcessEnv) => {
+  const c = await connect(await mcpServer(env));
+  const names = (await c.listTools()).tools.map((t) => t.name);
+  await c.close();
+  return names;
+};
 
-test("each request uses its own credentials", async () => {
-  const endpoint = await mcpServer({ bearer: BEARER, env: REQUIRED });
-  const a = await connect(endpoint, creds("token-a"));
-  const b = await connect(endpoint, creds("token-b"));
-  const pa = JSON.parse((await pingText(a)).text);
-  const pb = JSON.parse((await pingText(b)).text);
-  assert.deepEqual(pa.company, { id: "aaa", name: "Company A" });
-  assert.deepEqual(pb.company, { id: "bbb", name: "Company B" });
-  assert.equal(pa.instance, ninjaUrl);
-  await a.close();
-  await b.close();
-});
-
-test("without headers the environment is used", async () => {
-  const endpoint = await mcpServer({ bearer: BEARER, env: { INVOICE_NINJA_URL: ninjaUrl, INVOICE_NINJA_TOKEN: "token-env" } });
-  const c = await connect(endpoint, { Authorization: `Bearer ${BEARER}` });
-  assert.equal(JSON.parse((await pingText(c)).text).company.name, "Env Company");
+test("the environment's instance and token are used", async () => {
+  const c = await connect(await mcpServer(baseEnv()));
+  const ping = JSON.parse((await pingText(c)).text);
+  assert.equal(ping.company.name, "Env Company");
+  assert.equal(ping.instance, ninja.url);
   await c.close();
 });
 
-test("with the request flag a request without credentials is refused", async () => {
-  const endpoint = await mcpServer({ bearer: BEARER, env: REQUIRED });
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${BEARER}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
-  });
-  assert.equal(res.status, 400);
-  assert.equal(((await res.json()) as { error: string }).error, "missing_credentials");
+test("credential headers are ignored: the token never leaves for another host", async () => {
+  const endpoint = await mcpServer(baseEnv());
+  const urlOnly = { Authorization: `Bearer ${BEARER}`, "X-Invoice-Ninja-Url": elsewhere.url };
+  const all = { ...urlOnly, "X-Invoice-Ninja-Token": "token-other", "X-Invoice-Ninja-Safe-Mode": "false" };
+  for (const headers of [urlOnly, all]) {
+    const c = await connect(endpoint, headers);
+    assert.equal(JSON.parse((await pingText(c)).text).company.name, "Env Company");
+    await c.close();
+  }
+  assert.deepEqual(elsewhere.seen, []);
+  assert.ok(!ninja.seen.includes("token-other"));
 });
 
-test("a refused address is answered before anything is called", async () => {
-  const endpoint = await mcpServer({ bearer: BEARER, env: REQUIRED });
-  const before = seen.length;
-  for (const bad of ["http://invoicing.co", "https://user:pw@invoicing.co", "not a url"]) {
+test("a wrong or missing bearer is refused", async () => {
+  const endpoint = await mcpServer(baseEnv());
+  for (const authorization of ["Bearer wrong", "Bearer test-bearerX", "", `bearer ${BEARER}`]) {
     const res = await fetch(endpoint, {
       method: "POST",
-      headers: { ...creds("token-a"), "X-Invoice-Ninja-Url": bad, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      headers: { Authorization: authorization, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
     });
-    assert.equal(res.status, 400, bad);
-    assert.equal(((await res.json()) as { error: string }).error, "invalid_url", bad);
+    assert.equal(res.status, 401, authorization);
   }
-  assert.equal(seen.length, before);
 });
 
-test("credential headers without the bearer are refused", async () => {
-  const endpoint = await mcpServer({ bearer: BEARER, env: REQUIRED });
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: { ...creds("token-a"), Authorization: "Bearer wrong", "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
-  });
-  assert.equal(res.status, 401);
+test("/healthz is open, other paths are 404", async () => {
+  const endpoint = await mcpServer(baseEnv());
+  assert.equal((await fetch(endpoint.replace("/mcp", "/healthz"))).status, 200);
+  assert.equal((await fetch(endpoint.replace("/mcp", "/other"), { method: "POST" })).status, 404);
 });
 
-test("an open endpoint ignores credential headers", async () => {
-  const endpoint = await mcpServer({ env: { INVOICE_NINJA_URL: ninjaUrl, INVOICE_NINJA_TOKEN: "token-env" } });
-  const c = await connect(endpoint, { "X-Invoice-Ninja-Url": ninjaUrl, "X-Invoice-Ninja-Token": "token-a" });
-  assert.equal(JSON.parse((await pingText(c)).text).company.name, "Env Company");
-  await c.close();
+test("in_upload_document does not exist, whatever the mode", async () => {
+  const full = await toolNames({ ...baseEnv(), INVOICE_NINJA_ALLOW_WRITES: "true" });
+  assert.ok(full.includes("in_create_invoice"));
+  assert.ok(!full.includes("in_upload_document"));
 });
 
-test("the safe-mode header follows the connection's choice; the environment's safe mode is a floor", async () => {
-  const names = async (env: NodeJS.ProcessEnv, safe: string) => {
-    const endpoint = await mcpServer({ bearer: BEARER, env });
-    const c = await connect(endpoint, creds("token-a", { "X-Invoice-Ninja-Safe-Mode": safe }));
-    const list = (await c.listTools()).tools.map((t) => t.name);
-    await c.close();
-    return list;
-  };
-  const safe = await names(REQUIRED, "true");
-  assert.ok(!safe.includes("in_invoice_action") && !safe.includes("in_create_payment"));
+test("read-only by default; safe mode leaves out sending and payments", async () => {
+  const ro = await toolNames(baseEnv());
+  assert.ok(ro.includes("in_list_invoices") && !ro.some((n) => n.startsWith("in_create_")));
+  const safe = await toolNames({ ...baseEnv(), INVOICE_NINJA_ALLOW_WRITES: "true", INVOICE_NINJA_SAFE_MODE: "true" });
   assert.ok(safe.includes("in_create_invoice"));
-  const full = await names(REQUIRED, "false");
-  assert.ok(full.includes("in_invoice_action") && full.includes("in_create_payment"));
-  const garbled = await names(REQUIRED, "maybe");
-  assert.ok(!garbled.includes("in_invoice_action"));
-  const floor = await names({ ...REQUIRED, INVOICE_NINJA_SAFE_MODE: "true" }, "false");
-  assert.ok(!floor.includes("in_invoice_action"));
+  for (const n of ["in_invoice_action", "in_quote_action", "in_create_payment"]) assert.ok(!safe.includes(n), n);
 });
 
 test("a refused token reaches the result without the token, and nothing is logged", async () => {
-  const endpoint = await mcpServer({ bearer: BEARER, env: REQUIRED });
   const secret = "token-nobody-knows-1234";
   const logged: string[] = [];
   const write = process.stderr.write.bind(process.stderr);
@@ -157,7 +129,7 @@ test("a refused token reaches the result without the token, and nothing is logge
     return (write as (...a: unknown[]) => boolean)(chunk, ...rest);
   }) as typeof process.stderr.write;
   try {
-    const c = await connect(endpoint, creds(secret));
+    const c = await connect(await mcpServer({ INVOICE_NINJA_URL: ninja.url, INVOICE_NINJA_TOKEN: secret }));
     const r = await pingText(c);
     await c.close();
     assert.equal(r.isError, true);

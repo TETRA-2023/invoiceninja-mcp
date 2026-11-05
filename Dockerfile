@@ -1,7 +1,6 @@
 # syntax=docker/dockerfile:1
-# invoiceninja-mcp container image: the streamable-HTTP server on port 8787, as UID/GID 10001 with a read-only root
-# filesystem. ALVIREQ runs it as a sidecar next to each instance: the chart passes the bearer, and every request
-# carries the connection's Invoice Ninja credentials (INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS).
+# invoiceninja-mcp container image: the streamable-HTTP server on port 8787, as UID/GID 10001; it writes nothing, so
+# run it with a read-only root filesystem. Address, token and bearer come from the environment only (TETRA fork).
 
 ARG NODE_IMAGE=node:24-trixie-slim
 

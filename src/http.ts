@@ -1,21 +1,27 @@
 #!/usr/bin/env node
 /**
- * Streamable-HTTP transport entry point — for running the server remotely behind TLS and a reverse proxy, or next to
- * an ALVIREQ instance (its chart sets INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS and sends each connection's
- * credentials per request). Protect the endpoint with MCP_BEARER_TOKEN; see ./httpApp.ts and ./requestCredentials.ts.
+ * Streamable-HTTP transport entry point — for running the server remotely behind a gateway or reverse proxy.
+ * Protect the endpoint with MCP_BEARER_TOKEN; see ./httpApp.ts.
  */
 import { createServer as createHttpServer } from "node:http";
-import { requireRequestCredentials } from "./config.js";
+import { loadConfig } from "./config.js";
 import { createHandler } from "./httpApp.js";
 
 const PORT = Number(process.env.PORT ?? 8787);
 const HOST = process.env.HOST ?? "127.0.0.1";
 const BEARER = process.env.MCP_BEARER_TOKEN?.trim();
 
-if (requireRequestCredentials() && !BEARER) {
-  process.stderr.write(
-    "invoiceninja-mcp: INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS needs MCP_BEARER_TOKEN; credential headers are read only behind it.\n",
-  );
+// Fail at start, not on the first request, when the address or token is missing.
+try {
+  loadConfig();
+} catch (err) {
+  process.stderr.write(`invoiceninja-mcp: ${err instanceof Error ? err.message : String(err)}\n`);
+  process.exit(1);
+}
+
+// TETRA fork: an endpoint reachable beyond the loopback must have a bearer.
+if (!BEARER && !["127.0.0.1", "localhost", "::1"].includes(HOST)) {
+  process.stderr.write(`invoiceninja-mcp: MCP_BEARER_TOKEN is required when listening on ${HOST}.\n`);
   process.exit(1);
 }
 
@@ -24,7 +30,6 @@ const httpServer = createHttpServer(createHandler({ bearer: BEARER }));
 httpServer.listen(PORT, HOST, () => {
   process.stderr.write(
     `invoiceninja-mcp: streamable-http on http://${HOST}:${PORT}/mcp` +
-      `${BEARER ? " (bearer auth on)" : " (NO AUTH — set MCP_BEARER_TOKEN!)"}` +
-      `${requireRequestCredentials() ? ", credentials per request" : ""}\n`,
+      `${BEARER ? " (bearer auth on)" : " (NO AUTH — set MCP_BEARER_TOKEN!)"}\n`,
   );
 });

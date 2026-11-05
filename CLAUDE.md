@@ -10,16 +10,17 @@ A standalone MCP (Model Context Protocol) server that exposes a self-hosted **In
 
 ```bash
 npm run build        # tsc → dist/
-npm run typecheck    # tsc --noEmit (use this to check work; there is no test suite)
+npm run typecheck    # tsc --noEmit
+npm test             # node:test suites in test/ (fake Invoice Ninja, no network)
 npm run dev          # tsx src/index.ts  — stdio transport, no build step
 npm run dev:http     # tsx src/http.ts   — HTTP transport, no build step
 npm start            # node dist/index.js (stdio, requires build)
 npm run start:http   # node dist/http.js (HTTP, requires build)
 ```
 
-There are no tests, linter, or formatter configured. `npm run typecheck` is the only verification gate — run it after changes.
+Run `npm run typecheck` and `npm test` after changes.
 
-Required env to run: `INVOICE_NINJA_URL` and `INVOICE_NINJA_TOKEN` (see `.env.example`). `Dockerfile` builds the HTTP server image; `.github/workflows/image.yaml` publishes it to Harbor on a `v*` tag matching `package.json`. Note: nothing in the code loads a `.env` file automatically — env vars must be set in the shell, via the MCP host config, or with `node --env-file=.env`.
+Required env to run: `INVOICE_NINJA_URL` and `INVOICE_NINJA_TOKEN` (see `.env.example`). `Dockerfile` builds the HTTP server image; CI (`.github/workflows/`) builds, smoke-tests and publishes it to `ghcr.io/tetra-2023/invoiceninja-mcp`. Note: nothing in the code loads a `.env` file automatically — env vars must be set in the shell, via the MCP host config, or with `node --env-file=.env`.
 
 ## Architecture
 
@@ -37,7 +38,7 @@ Both entry points call the same `createServer()`; transport is the only differen
 
 ## Key conventions (follow these when editing `tools.ts`)
 
-- **Deny list and safe mode:** every tool goes through the local `register` wrapper, which skips names in `cfg.disabledTools` (`INVOICE_NINJA_DISABLED_TOOLS`) and, with `cfg.safeMode` (`INVOICE_NINJA_SAFE_MODE`), the `SAFE_MODE_DISABLED` set (`in_invoice_action`, `in_quote_action`, `in_create_payment`); safe mode also narrows `in_task_action` to archive/restore. Register new tools with `register(...)`, never `server.registerTool(...)` directly. ALVIREQ runs the server with writes on and `INVOICE_NINJA_REQUIRE_REQUEST_CREDENTIALS=true`: each request carries the connection's address, token and safe mode in `X-Invoice-Ninja-*` headers (`src/requestCredentials.ts`), read only behind the bearer in `src/httpApp.ts`; `loadConfig(env, overrides)` merges them, with the environment's safe mode as a floor. Never log a token; `npm test` covers the headers with a fake Invoice Ninja.
+- **Deny list and safe mode:** every tool goes through the local `register` wrapper, which skips names in `cfg.disabledTools` (`INVOICE_NINJA_DISABLED_TOOLS`) and, with `cfg.safeMode` (`INVOICE_NINJA_SAFE_MODE`), the `SAFE_MODE_DISABLED` set (`in_invoice_action`, `in_quote_action`, `in_create_payment`); safe mode also narrows `in_task_action` to archive/restore. Register new tools with `register(...)`, never `server.registerTool(...)` directly. **TETRA fork:** configuration comes from the environment only (`loadConfig(env)`); never add a code path that lets a request choose the Invoice Ninja address or token, and never add a tool that reads the server filesystem. Never log a token; `npm test` covers both rules with a fake Invoice Ninja.
 - **Read vs write gating:** read tools register unconditionally. `registerTools` returns early (`if (!cfg.allowWrites) return`) before defining any write tool, so writes are physically absent unless `INVOICE_NINJA_ALLOW_WRITES=true`. Keep new write tools below that guard.
 - **Tool annotations:** read tools get `{ readOnlyHint: true }`. Writes get `WRITE` (`destructiveHint: false`) or `DESTRUCTIVE` (`destructiveHint: true`, for lifecycle/delete actions) so hosts can prompt before executing.
 - **List projection:** list handlers project rows down to a small `*_FIELDS` allowlist (`project()`) to keep model context lean. Full records come from the `in_get_*` tools. When adding a field to a list, add it to the relevant `*_FIELDS` constant.

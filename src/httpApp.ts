@@ -1,17 +1,17 @@
 /**
  * The streamable-HTTP request handler, separate from ./http.ts so tests can run it on a port of their own.
  *
- * Stateless mode: each POST /mcp builds a fresh server and transport from the environment plus the request's
- * credential headers (./requestCredentials.ts), so one process serves any number of Invoice Ninja accounts.
+ * Stateless mode: each POST /mcp builds a fresh server and transport from the environment. Request headers never
+ * change the configuration (TETRA fork, see ./config.ts).
  */
+import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { ConfigError, type ConfigOverrides } from "./config.js";
-import { credentialsFrom } from "./requestCredentials.js";
+import { ConfigError } from "./config.js";
 import { createServer } from "./server.js";
 
 export interface HttpOptions {
-  /** MCP_BEARER_TOKEN; without it the endpoint is open and credential headers are ignored. */
+  /** MCP_BEARER_TOKEN; without it the endpoint is open. */
   bearer?: string;
   env?: NodeJS.ProcessEnv;
   path?: string;
@@ -39,9 +39,16 @@ function json(res: ServerResponse, status: number, body: unknown, headers: Recor
   res.end(JSON.stringify(body));
 }
 
+/** Constant-time comparison of the Authorization header with the expected one. */
+function authorized(header: string | undefined, expected: Buffer): boolean {
+  const got = Buffer.from(header ?? "", "utf8");
+  return got.length === expected.length && timingSafeEqual(got, expected);
+}
+
 export function createHandler(opts: HttpOptions = {}): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
   const env = opts.env ?? process.env;
   const bearer = opts.bearer?.trim() || undefined;
+  const expected = bearer ? Buffer.from(`Bearer ${bearer}`, "utf8") : undefined;
   const path = opts.path ?? "/mcp";
 
   return async (req, res) => {
@@ -50,18 +57,15 @@ export function createHandler(opts: HttpOptions = {}): (req: IncomingMessage, re
     const url = (req.url ?? "").split("?")[0];
     if (url !== path) return json(res, 404, { error: "Not found" });
 
-    if (bearer && (req.headers.authorization ?? "") !== `Bearer ${bearer}`) return json(res, 401, { error: "Unauthorized" });
+    if (expected && !authorized(req.headers.authorization, expected)) return json(res, 401, { error: "Unauthorized" });
 
     if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" }, { Allow: "POST" });
 
-    // Credentials from the request only behind the bearer; an open endpoint uses the environment alone.
-    let overrides: ConfigOverrides = {};
     let server: ReturnType<typeof createServer>;
     try {
-      if (bearer) overrides = credentialsFrom(req.headers);
-      server = createServer(overrides, env);
+      server = createServer(env);
     } catch (err) {
-      if (err instanceof ConfigError) return json(res, 400, { error: err.code, message: err.message });
+      if (err instanceof ConfigError) return json(res, 500, { error: err.code });
       return json(res, 500, { error: "server_error" });
     }
 

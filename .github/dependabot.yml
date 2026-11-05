@@ -1,0 +1,36 @@
+# Dependabot configuration.
+#
+# - uv: security + version-update PRs for npm deps in package-lock.json.
+# - github-actions: keeps the action pins in .github/workflows current.
+#
+# These are first-party TETRA repos, so PRs are mergeable as-is after CI.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Europe/Paris"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    commit-message:
+      # Runtime deps -> fix(deps) so a security/runtime bump cuts a patch release
+      # (-> release-image.yml builds a fresh :stable + :X.Y.Z with the fix).
+      # Dev/tooling deps -> chore(deps-dev): no release.
+      prefix: "fix"
+      prefix-development: "chore"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Europe/Paris"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
