@@ -1,6 +1,6 @@
 # Dependabot configuration.
 #
-# - uv: security + version-update PRs for npm deps in package-lock.json.
+# - npm: security + version-update PRs for the deps in package-lock.json.
 # - github-actions: keeps the action pins in .github/workflows current.
 #
 # These are first-party TETRA repos, so PRs are mergeable as-is after CI.
@@ -17,11 +17,12 @@ updates:
     labels:
       - "dependencies"
     commit-message:
-      # Runtime deps -> fix(deps) so a security/runtime bump cuts a patch release
-      # (-> release-image.yml builds a fresh :stable + :X.Y.Z with the fix).
+      # Runtime deps -> fix(deps): a security/runtime bump cuts a patch release.
       # Dev/tooling deps -> chore(deps-dev): no release.
       prefix: "fix"
       prefix-development: "chore"
+      # include: scope -> "fix(deps): ..." / "chore(deps-dev): ..." (US-7 #2938).
+      include: "scope"
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -34,3 +35,7 @@ updates:
     labels:
       - "dependencies"
       - "github-actions"
+    commit-message:
+      # Action pins are CI-only: "ci(deps): ..." never cuts a release (US-7 #2938).
+      prefix: "ci"
+      include: "scope"
