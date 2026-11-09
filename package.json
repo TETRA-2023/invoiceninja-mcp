@@ -6,7 +6,7 @@
   "author": "Halvic Labs <hire@halvic.ch> (https://halvic.ch)",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/halviclabs/invoiceninja-mcp.git"
+    "url": "git+https://github.com/TETRA-2023/invoiceninja-mcp.git"
   },
   "type": "module",
   "bin": {
@@ -44,6 +44,8 @@
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "conventional-changelog-conventionalcommits": "^9.3.1",
+    "semantic-release": "^25.0.9",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   },

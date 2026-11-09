@@ -128,3 +128,44 @@ jobs:
         docker run --rm -i --network "container:$SMOKE_NAME" python:3.12-alpine \
           python - http http://127.0.0.1:8000/mcp --bearer ci-token --wait 60 \
           < "$SMOKE_TOOLS/scripts/ci/mcp-smoke.py"
+
+  # Tag only (Taiga T25.6 #3576, decision 5 of EPIC #2866): semantic-release tags
+  # vX.Y.Z and creates the GitHub Release with the tetra-release App, nothing is
+  # committed to main. The tag (pushed by the App, not GITHUB_TOKEN) triggers
+  # release-image.yml. Only the App may create v* tags (org ruleset
+  # org-release-tags). Same model as umami-mcp (Node).
+  release:
+    needs: [secrets, lint, test, docker]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    concurrency: release
+    permissions:
+      contents: read
+
+    steps:
+      # contents:write only: the github plugin's issue/PR comments and labels
+      # are turned off in .releaserc.json, so no issues/pull-requests scope.
+      - id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_KEY }}
+          permission-contents: write
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24" # semantic-release 25 needs ^22.14 || >=24.10
+          cache: npm
+
+      - run: npm ci
+
+      - name: Semantic Release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: npx semantic-release
