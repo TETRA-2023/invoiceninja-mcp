@@ -23,6 +23,13 @@ updates:
       prefix-development: "chore"
       # include: scope -> "fix(deps): ..." / "chore(deps-dev): ..." (US-7 #2938).
       include: "scope"
+    ignore:
+      # @types/node follows the RUNTIME major (node:24 in the Dockerfile, Node
+      # 24 in CI), not the latest Node: a newer major types APIs Node 24 does
+      # not have. Raise both together. A version range, not update-types, so
+      # security updates are held too (ci-workflows README).
+      - dependency-name: "@types/node"
+        versions: [">=25"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
