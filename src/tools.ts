@@ -587,10 +587,18 @@ export function registerTools(server: McpServer, cfg: Config): void {
       notes: z.string().optional().describe("Line description."),
       cost: z.number().describe("Unit price."),
       quantity: z.number().default(1),
-      tax_name1: z.string().optional(),
-      tax_rate1: z.number().optional(),
+      tax_name1: z.string().optional().describe("Line tax name. Leave unset when the tax is set on the document."),
+      tax_rate1: z.number().optional().describe("Line tax rate in percent. Leave unset when the tax is set on the document."),
+      custom_value1: z.string().optional().describe("Value of the first product custom field for this line."),
+      custom_value2: z.string().optional().describe("Value of the second product custom field for this line."),
     })
     .passthrough();
+
+  // Document-level tax: applies to the invoice total, not to each line.
+  const documentTax = {
+    tax_name1: z.string().optional().describe("Document-level tax name, e.g. 'VAT'."),
+    tax_rate1: z.number().optional().describe("Document-level tax rate in percent, e.g. 20."),
+  };
 
   register(
     "in_create_invoice",
@@ -613,6 +621,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
           .optional()
           .describe("Numeric currency id as string; common ids: 1=USD, 3=EUR, 17=CHF. Omit for client's default currency."),
         exchange_rate: z.number().optional(),
+        ...documentTax,
       },
       annotations: WRITE,
     },
@@ -650,6 +659,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
           .optional()
           .describe("Numeric currency id as string; common ids: 1=USD, 3=EUR, 17=CHF."),
         exchange_rate: z.number().optional(),
+        ...documentTax,
       },
       annotations: WRITE,
     },
