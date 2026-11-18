@@ -751,23 +751,75 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
+  // Quote document fields. Invoice Ninja stores a quote's "valid until" date in
+  // `due_date`; `valid_until` is kept as an input alias and mapped onto it.
+  // No status field: sending, approving or converting a quote stays with
+  // in_quote_action (left out in safe mode), and zod strips unknown keys.
+  const quoteFields = {
+    date: z.string().optional().describe("Y-m-d quote date."),
+    due_date: z.string().optional().describe("Y-m-d date the quote is valid until (Invoice Ninja's due_date)."),
+    valid_until: z.string().optional().describe("Alias of due_date; due_date wins when both are given."),
+    po_number: z.string().optional(),
+    public_notes: z.string().optional().describe("Visible to the client."),
+    private_notes: z.string().optional().describe("Internal only."),
+    terms: z.string().optional().describe("Replaces the company default terms on this quote."),
+    footer: z.string().optional(),
+    discount: z.number().optional(),
+    currency_id: z
+      .string()
+      .optional()
+      .describe("Numeric currency id as string; common ids: 1=USD, 3=EUR, 17=CHF. Omit for client's default currency."),
+    exchange_rate: z.number().optional(),
+    ...documentTax,
+  };
+  const quoteBody = <T extends { valid_until?: string; due_date?: string }>(a: T) => {
+    const { valid_until, ...rest } = a;
+    return rest.due_date === undefined && valid_until !== undefined ? { ...rest, due_date: valid_until } : rest;
+  };
+
   register(
     "in_create_quote",
     {
       title: "Create quote",
-      description: "Create a quote for a client. Requires client_id and at least one line item.",
+      description:
+        "Create a draft quote for a client. Requires client_id and at least one line item. Nothing is sent: " +
+        "emailing, approving or converting a quote is in_quote_action.",
       inputSchema: {
-        client_id: z.string(),
-        line_items: z.array(lineItemSchema).min(1),
-        date: z.string().optional(),
-        valid_until: z.string().optional(),
-        public_notes: z.string().optional(),
+        client_id: z.string().describe("Target client id."),
+        line_items: z.array(lineItemSchema).min(1).describe("Quote line items."),
+        ...quoteFields,
       },
       annotations: WRITE,
     },
     async (a) => {
       try {
-        return ok((await client.create("quotes", a)).data);
+        return ok((await client.create("quotes", quoteBody(a))).data);
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  register(
+    "in_update_quote",
+    {
+      title: "Update quote",
+      description:
+        "Partially update a quote's content. Omitted fields keep their current values. Supplying line_items " +
+        "replaces the WHOLE array: resend every line, not only the changed one. Does not send, approve or " +
+        "convert the quote and cannot change its status (that is in_quote_action).",
+      inputSchema: {
+        id: z.string().describe("Quote id (hashed string id, not the display number)."),
+        client_id: z.string().optional(),
+        line_items: z.array(lineItemSchema).min(1).optional().describe("Replaces ALL line items when provided."),
+        ...quoteFields,
+      },
+      annotations: WRITE,
+    },
+    async (a) => {
+      try {
+        const { id, ...body } = a;
+        return ok((await client.update("quotes", id, quoteBody(body))).data);
       } catch (e) {
         return fail(e);
       }

@@ -35,7 +35,7 @@ blog post [Automate invoicing with MCP: my Invoice Ninja server](https://halvic.
 **Write (only when `INVOICE_NINJA_ALLOW_WRITES=true`):**
 `in_create_client`, `in_update_client`, `in_create_invoice`, `in_invoice_action`
 (mark_sent / mark_paid / archive / restore / delete / cancel / email),
-`in_create_payment`, `in_create_quote`, `in_create_product`, `in_create_expense`,
+`in_create_payment`, `in_create_quote`, `in_update_quote`, `in_create_product`, `in_create_expense`,
 `in_create_task`, `in_start_task`, `in_stop_task`, `in_log_time`, `in_task_action`
 (archive / restore / delete / **invoice**), `in_create_project`.
 
