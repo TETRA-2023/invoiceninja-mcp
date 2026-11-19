@@ -55,9 +55,21 @@ const QUOTE_FIELDS = ["id", "number", "client_id", "status_id", "amount", "date"
 const PAYMENT_FIELDS = ["id", "number", "client_id", "amount", "applied", "date", "type_id"];
 const PRODUCT_FIELDS = ["id", "product_key", "notes", "price", "cost", "quantity"];
 const EXPENSE_FIELDS = [
-  "id", "number", "vendor_id", "client_id", "amount", "date", "category_id",
-  "currency_id", "transaction_reference",
+  "id", "number", "vendor_id", "client_id", "amount", "date", "payment_date", "category_id",
+  "currency_id", "transaction_reference", "is_deleted", "archived_at", "updated_at",
 ];
+
+/** Record state of an expense row: Invoice Ninja reports archive and delete as `archived_at` (deleted_at) + `is_deleted`. */
+function recordState(row: Json): "active" | "archived" | "deleted" {
+  if (row.is_deleted === true) return "deleted";
+  return typeof row.archived_at === "number" && row.archived_at > 0 ? "archived" : "active";
+}
+
+/** An expense list row: the projected fields, its record state and how many documents it carries. */
+function expenseRow(row: Json): Json {
+  const docs = Array.isArray(row.documents) ? row.documents.length : 0;
+  return { ...project([row], EXPENSE_FIELDS)[0], state: recordState(row), documents_count: docs };
+}
 const VENDOR_FIELDS = ["id", "name", "number", "currency_id", "is_deleted"];
 const EXPCAT_FIELDS = ["id", "name", "color", "is_deleted"];
 const TASK_FIELDS = [
@@ -331,11 +343,41 @@ export function registerTools(server: McpServer, cfg: Config): void {
   // --------------------------------------------------------------- expenses
   register(
     "in_list_expenses",
-    { title: "List expenses", description: "List expenses with optional search.", inputSchema: listShape, annotations: RO },
+    {
+      title: "List expenses",
+      description:
+        "List expenses. filter is a free-text search across number, amount, notes and vendor/category/client " +
+        "names: compare `number` exactly yourself. Each row carries state " +
+        "(active/archived/deleted) and documents_count; status=all mixes the three states.",
+      inputSchema: listShape,
+      annotations: RO,
+    },
     async (a) => {
       try {
         const r = await client.list<Json>("expenses", toListOpts(a));
-        return ok({ count: r.data.length, expenses: project(r.data, EXPENSE_FIELDS) });
+        return ok({ count: r.data.length, expenses: r.data.map(expenseRow) });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  );
+
+  register(
+    "in_get_expense",
+    {
+      title: "Get expense",
+      description:
+        "Fetch a single expense by id: every field, its record state (active/archived/deleted) and its attached documents.",
+      inputSchema: {
+        id: z.string().describe("Expense id (hashed string id, not the display number)."),
+        include: z.string().optional().describe("Relationships to side-load, e.g. 'vendor,category'. Documents always come back."),
+      },
+      annotations: RO,
+    },
+    async (a) => {
+      try {
+        const e = (await client.get<Json>("expenses", a.id, a.include)).data;
+        return ok({ ...e, state: recordState(e) });
       } catch (e) {
         return fail(e);
       }
@@ -848,32 +890,85 @@ export function registerTools(server: McpServer, cfg: Config): void {
     },
   );
 
+  // Expense fields shared by create and update. Taxes follow Invoice Ninja's expense model: a rate per tax slot, or,
+  // with calculate_tax_by_amount, a fixed amount per slot.
+  const expenseFields = {
+    number: z.string().trim().min(1).optional().describe("Expense number: the supplier's invoice number. Unique per company in Invoice Ninja, deleted expenses included."),
+    amount: z.number().optional().describe("Amount in the expense currency."),
+    date: z.string().optional().describe("Y-m-d expense date (the supplier invoice date)."),
+    payment_date: z.string().optional().describe("Y-m-d date the expense was paid."),
+    client_id: z.string().optional(),
+    project_id: z.string().optional().describe("Assign to a project; the project's client is applied automatically."),
+    category_id: z.string().optional(),
+    currency_id: z.string().optional().describe("Numeric currency id as string (1=USD, 3=EUR, 17=CHF)."),
+    exchange_rate: z.number().optional(),
+    transaction_reference: z.string().optional().describe("Payment or bank transaction reference."),
+    should_be_invoiced: z.boolean().optional().describe("Mark as billable to the assigned client."),
+    tax_name1: z.string().optional(),
+    tax_rate1: z.number().optional().describe("Tax rate in percent."),
+    tax_amount1: z.number().optional().describe("Fixed tax amount; used when calculate_tax_by_amount is true."),
+    tax_name2: z.string().optional(),
+    tax_rate2: z.number().optional(),
+    tax_amount2: z.number().optional(),
+    uses_inclusive_taxes: z.boolean().optional().describe("The amount already includes the taxes."),
+    calculate_tax_by_amount: z.boolean().optional().describe("Taxes are given as amounts (tax_amountN), not rates."),
+    public_notes: z.string().optional(),
+    private_notes: z.string().optional(),
+  };
+
+  /**
+   * Expenses whose number matches `number` case-insensitively, in any record state, other than `exceptId`.
+   * Invoice Ninja's own unique rule counts deleted rows too, so they are reported rather than hidden.
+   */
+  async function expensesNumbered(number: string, exceptId?: string): Promise<Json[]> {
+    // The filter is a substring search over many columns, so the exact match can sit on any page: read them all.
+    const perPage = Math.min(100, cfg.maxPerPage);
+    const rows: Json[] = [];
+    for (let page = 1; ; page++) {
+      const r = await client.list<Json>("expenses", { perPage, page, filter: number, extra: { status: "active,archived,deleted" } });
+      rows.push(...r.data);
+      if (r.data.length < perPage || page >= 50) break;
+    }
+    const want = number.trim().toLowerCase();
+    return rows
+      .filter((e) => e.id !== exceptId && String(e.number ?? "").trim().toLowerCase() === want)
+      .map((e) => ({ id: e.id, number: e.number, vendor_id: e.vendor_id, amount: e.amount, date: e.date, state: recordState(e) }));
+  }
+
   register(
     "in_create_expense",
     {
       title: "Create expense",
       description:
-        "Record an expense. currency_id sets the expense currency (defaults to the company currency); " +
-        "common ids: 1=USD, 3=EUR, 17=CHF. Attach the source receipt in Invoice Ninja.",
+        "Record a supplier expense (internal; nothing is sent). Refuses when an expense with the same number " +
+        "(case-insensitive, any state) already exists, unless allow_duplicate is true — which only helps for a case or " +
+        "spacing variant, since Invoice Ninja refuses an exact duplicate itself. currency_id defaults to the " +
+        "company currency. Attach the source receipt in Invoice Ninja.",
       inputSchema: {
+        ...expenseFields,
+        vendor_id: z.string().optional().describe("Vendor id (hashed string id). Omit for costs with no supplier."),
         amount: z.number().describe("Amount in the expense currency."),
-        date: z.string().optional().describe("Y-m-d expense date."),
-        vendor_id: z.string().optional(),
-        client_id: z.string().optional(),
-        project_id: z.string().optional().describe("Assign to a project; the project's client is applied automatically."),
-        category_id: z.string().optional(),
-        currency_id: z.string().optional().describe("Numeric currency id as string; omit for company currency."),
-        exchange_rate: z.number().optional(),
-        transaction_reference: z.string().optional().describe("Provider invoice/receipt number — also used for deduplication."),
-        should_be_invoiced: z.boolean().optional().describe("Mark as billable to the assigned client."),
-        public_notes: z.string().optional(),
-        private_notes: z.string().optional(),
+        allow_duplicate: z
+          .boolean()
+          .optional()
+          .describe("Skip the duplicate check. Invoice Ninja still refuses a number already taken (company-wide, deleted rows included)."),
       },
       annotations: WRITE,
     },
     async (a) => {
       try {
-        return ok((await client.create("expenses", a)).data);
+        const { allow_duplicate, ...body } = a;
+        if (body.number && !allow_duplicate) {
+          const existing = await expensesNumbered(body.number);
+          if (existing.length > 0) {
+            return fail(new Error(
+              `An expense numbered "${body.number}" already exists: ${JSON.stringify(existing)}. ` +
+                "Nothing was created. Correct that expense instead, or, when the same number genuinely comes from another " +
+                "vendor, make it unique (e.g. a vendor prefix): Invoice Ninja refuses a number already taken company-wide.",
+            ));
+          }
+        }
+        return ok((await client.create("expenses", body)).data);
       } catch (e) {
         return fail(e);
       }
@@ -885,27 +980,28 @@ export function registerTools(server: McpServer, cfg: Config): void {
     {
       title: "Update expense",
       description:
-        "Partially update an expense (e.g. assign a project/category). Omitted fields are preserved — including " +
-        "currency_id, which Invoice Ninja would otherwise reset to the company currency on every update.",
+        "Partially update an expense: number, amounts, dates, vendor, category, taxes, notes. Omitted fields are " +
+        "preserved — including currency_id, which Invoice Ninja would otherwise reset to the company currency on " +
+        "every update. A new number is refused when another expense already carries it (case-insensitive); a case " +
+        "fix on the expense's own number is allowed.",
       inputSchema: {
         id: z.string().describe("Expense id (hashed string id)."),
-        amount: z.number().optional(),
-        date: z.string().optional(),
         vendor_id: z.string().optional(),
-        client_id: z.string().optional(),
-        project_id: z.string().optional().describe("Assign to a project; the project's client is applied automatically."),
-        category_id: z.string().optional(),
-        currency_id: z.string().optional(),
-        transaction_reference: z.string().optional(),
-        should_be_invoiced: z.boolean().optional().describe("Mark as billable to the assigned client."),
-        public_notes: z.string().optional(),
-        private_notes: z.string().optional(),
+        ...expenseFields,
       },
       annotations: WRITE,
     },
     async (a) => {
       try {
         const { id, ...body } = a;
+        if (body.number) {
+          const existing = await expensesNumbered(body.number, id);
+          if (existing.length > 0) {
+            return fail(new Error(
+              `Another expense is already numbered "${body.number}": ${JSON.stringify(existing)}. Nothing was changed.`,
+            ));
+          }
+        }
         if (!body.currency_id) {
           // IN's UpdateExpenseRequest resets an omitted currency_id to the
           // company currency — resend the current one to keep it stable.
