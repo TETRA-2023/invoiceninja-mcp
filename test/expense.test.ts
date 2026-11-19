@@ -43,7 +43,10 @@ before(async () => {
       if (path === "/api/v1/expenses" && req.method === "GET") {
         queries.push(url.searchParams);
         const f = (url.searchParams.get("filter") ?? "").toLowerCase();
-        return res.end(JSON.stringify({ data: expenses.filter((e) => String(e.number).toLowerCase().includes(f)) }));
+        const per = Number(url.searchParams.get("per_page") ?? 20);
+        const page = Number(url.searchParams.get("page") ?? 1);
+        const hits = expenses.filter((e) => `${e.number} ${e.public_notes ?? ""}`.toLowerCase().includes(f));
+        return res.end(JSON.stringify({ data: hits.slice((page - 1) * per, page * per) }));
       }
       if (path === "/api/v1/expenses" && req.method === "POST") {
         writes.push({ method: "POST", path, body });
@@ -68,8 +71,9 @@ after(async () => {
   for (const s of [...servers, ninja]) await new Promise<void>((r) => s.close(() => r()));
 });
 
-async function connect() {
+async function connect(extraEnv: Record<string, string> = {}) {
   const env = {
+    ...extraEnv,
     INVOICE_NINJA_URL: ninjaUrl,
     INVOICE_NINJA_TOKEN: "token-env",
     INVOICE_NINJA_ALLOW_WRITES: "true",
@@ -95,7 +99,7 @@ test("safe mode exposes the expense read and write tools", async () => {
   await c.close();
 });
 
-test("in_create_expense sends number, dates and taxes, and requires vendor_id", async () => {
+test("in_create_expense sends number, dates and taxes; vendor_id is optional, amount is not", async () => {
   const c = await connect();
   const args = {
     vendor_id: "v1", number: "INV166891906", amount: 4, date: "2026-11-16", payment_date: "2026-11-16",
@@ -106,8 +110,10 @@ test("in_create_expense sends number, dates and taxes, and requires vendor_id", 
   const sent = writes.at(-1)!;
   assert.equal(sent.method, "POST");
   assert.deepEqual(sent.body, args);
-  const missing = await call(c, "in_create_expense", { amount: 1 });
-  assert.equal(missing.isError, true);
+  const noVendor = await call(c, "in_create_expense", { amount: 12.5, private_notes: "bank fee" });
+  assert.notEqual(noVendor.isError, true, noVendor.content[0]!.text);
+  const noAmount = await call(c, "in_create_expense", { vendor_id: "v1" });
+  assert.equal(noAmount.isError, true);
   await c.close();
 });
 
@@ -159,5 +165,30 @@ test("in_get_expense returns the full record with documents and state", async ()
   assert.deepEqual(e.documents, []);
   const e1 = json(await call(c, "in_get_expense", { id: "e1" }));
   assert.deepEqual(e1.documents, [doc]);
+  await c.close();
+});
+
+test("the duplicate check reads every page of the search", async () => {
+  // 25 rows whose notes contain the number, then the exact match last; MAX_PER_PAGE=10 forces three pages.
+  for (let i = 0; i < 25; i++) expenses.unshift({ id: `n${i}`, number: `N${i}`, public_notes: "ref 77", is_deleted: false, archived_at: 0 });
+  expenses.push({ id: "x77", number: "77", vendor_id: "v1", is_deleted: false, archived_at: 0 });
+  const c = await connect({ INVOICE_NINJA_MAX_PER_PAGE: "10" });
+  const r = await call(c, "in_create_expense", { vendor_id: "v1", amount: 1, number: "77" });
+  assert.equal(r.isError, true);
+  assert.match(r.content[0]!.text, /x77/);
+  assert.equal(writes.length, 0);
+  await c.close();
+});
+
+test("an empty or blank number is rejected, never sent", async () => {
+  const c = await connect();
+  for (const number of ["", "   "]) {
+    assert.equal((await call(c, "in_update_expense", { id: "e1", number })).isError, true, JSON.stringify(number));
+    assert.equal((await call(c, "in_create_expense", { vendor_id: "v1", amount: 1, number })).isError, true, JSON.stringify(number));
+  }
+  assert.equal(writes.length, 0);
+  const trimmed = await call(c, "in_create_expense", { vendor_id: "v1", amount: 1, number: "  NEW-1 " });
+  assert.notEqual(trimmed.isError, true);
+  assert.equal(writes.at(-1)!.body.number, "NEW-1");
   await c.close();
 });

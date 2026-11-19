@@ -346,7 +346,8 @@ export function registerTools(server: McpServer, cfg: Config): void {
     {
       title: "List expenses",
       description:
-        "List expenses with optional search (filter matches the number). Each row carries state " +
+        "List expenses. filter is a free-text search across number, amount, notes and vendor/category/client " +
+        "names: compare `number` exactly yourself. Each row carries state " +
         "(active/archived/deleted) and documents_count; status=all mixes the three states.",
       inputSchema: listShape,
       annotations: RO,
@@ -892,7 +893,7 @@ export function registerTools(server: McpServer, cfg: Config): void {
   // Expense fields shared by create and update. Taxes follow Invoice Ninja's expense model: a rate per tax slot, or,
   // with calculate_tax_by_amount, a fixed amount per slot.
   const expenseFields = {
-    number: z.string().optional().describe("Expense number: the supplier's invoice number. Unique per company in Invoice Ninja."),
+    number: z.string().trim().min(1).optional().describe("Expense number: the supplier's invoice number. Unique per company in Invoice Ninja, deleted expenses included."),
     amount: z.number().optional().describe("Amount in the expense currency."),
     date: z.string().optional().describe("Y-m-d expense date (the supplier invoice date)."),
     payment_date: z.string().optional().describe("Y-m-d date the expense was paid."),
@@ -920,9 +921,16 @@ export function registerTools(server: McpServer, cfg: Config): void {
    * Invoice Ninja's own unique rule counts deleted rows too, so they are reported rather than hidden.
    */
   async function expensesNumbered(number: string, exceptId?: string): Promise<Json[]> {
-    const r = await client.list<Json>("expenses", { perPage: 100, filter: number, extra: { status: "active,archived,deleted" } });
+    // The filter is a substring search over many columns, so the exact match can sit on any page: read them all.
+    const perPage = Math.min(100, cfg.maxPerPage);
+    const rows: Json[] = [];
+    for (let page = 1; ; page++) {
+      const r = await client.list<Json>("expenses", { perPage, page, filter: number, extra: { status: "active,archived,deleted" } });
+      rows.push(...r.data);
+      if (r.data.length < perPage || page >= 50) break;
+    }
     const want = number.trim().toLowerCase();
-    return r.data
+    return rows
       .filter((e) => e.id !== exceptId && String(e.number ?? "").trim().toLowerCase() === want)
       .map((e) => ({ id: e.id, number: e.number, vendor_id: e.vendor_id, amount: e.amount, date: e.date, state: recordState(e) }));
   }
@@ -933,16 +941,17 @@ export function registerTools(server: McpServer, cfg: Config): void {
       title: "Create expense",
       description:
         "Record a supplier expense (internal; nothing is sent). Refuses when an expense with the same number " +
-        "(case-insensitive, any state) already exists, unless allow_duplicate is true. currency_id defaults to the " +
+        "(case-insensitive, any state) already exists, unless allow_duplicate is true — which only helps for a case or " +
+        "spacing variant, since Invoice Ninja refuses an exact duplicate itself. currency_id defaults to the " +
         "company currency. Attach the source receipt in Invoice Ninja.",
       inputSchema: {
         ...expenseFields,
-        vendor_id: z.string().describe("Vendor id (hashed string id)."),
+        vendor_id: z.string().optional().describe("Vendor id (hashed string id). Omit for costs with no supplier."),
         amount: z.number().describe("Amount in the expense currency."),
         allow_duplicate: z
           .boolean()
           .optional()
-          .describe("Create even though an expense with this number exists. Invoice Ninja still refuses an exact duplicate."),
+          .describe("Skip the duplicate check. Invoice Ninja still refuses a number already taken (company-wide, deleted rows included)."),
       },
       annotations: WRITE,
     },
@@ -954,7 +963,8 @@ export function registerTools(server: McpServer, cfg: Config): void {
           if (existing.length > 0) {
             return fail(new Error(
               `An expense numbered "${body.number}" already exists: ${JSON.stringify(existing)}. ` +
-                "Nothing was created. Update that expense instead, or pass allow_duplicate=true.",
+                "Nothing was created. Correct that expense instead, or, when the same number genuinely comes from another " +
+                "vendor, make it unique (e.g. a vendor prefix): Invoice Ninja refuses a number already taken company-wide.",
             ));
           }
         }
