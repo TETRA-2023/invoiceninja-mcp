@@ -28,7 +28,7 @@ blog post [Automate invoicing with MCP: my Invoice Ninja server](https://halvic.
 
 **Read (always on):**
 `in_ping`, `in_list_clients`, `in_get_client`, `in_list_invoices`, `in_get_invoice`,
-`in_list_quotes`, `in_list_payments`, `in_list_products`, `in_list_expenses`,
+`in_list_quotes`, `in_list_payments`, `in_list_products`, `in_list_expenses`, `in_get_expense`,
 `in_outstanding_summary` (aggregated AR / overdue totals + top debtors),
 `in_list_tasks`, `in_get_task`, `in_list_projects`.
 
@@ -36,11 +36,18 @@ blog post [Automate invoicing with MCP: my Invoice Ninja server](https://halvic.
 `in_create_client`, `in_update_client`, `in_create_invoice`, `in_invoice_action`
 (mark_sent / mark_paid / archive / restore / delete / cancel / email),
 `in_create_payment`, `in_create_quote`, `in_update_quote`, `in_create_product`, `in_create_expense`,
+`in_update_expense`,
 `in_create_task`, `in_start_task`, `in_stop_task`, `in_log_time`, `in_task_action`
 (archive / restore / delete / **invoice**), `in_create_project`.
 
 List results are projected to key fields to keep model context lean; use the
 `in_get_*` tools for full records.
+
+**Expenses.** `in_create_expense` takes the supplier invoice number as `number`, plus `payment_date`
+and the tax fields; it refuses a number another expense already carries (case-insensitive, in any
+record state, since Invoice Ninja's own unique rule counts deleted rows) unless `allow_duplicate` is
+set. `in_update_expense` can renumber, refusing a number held by another expense. Expense list rows
+carry `state` (active / archived / deleted) and `documents_count`.
 
 **Safe mode and a deny list.** `INVOICE_NINJA_SAFE_MODE=true` keeps writes on but leaves out
 `in_invoice_action`, `in_quote_action` and `in_create_payment`, and narrows `in_task_action` to
