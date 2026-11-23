@@ -51,7 +51,9 @@ const INVOICE_FIELDS = [
   "id", "number", "client_id", "status_id", "amount", "balance",
   "date", "due_date", "po_number", "is_deleted",
 ];
-const QUOTE_FIELDS = ["id", "number", "client_id", "status_id", "amount", "date", "valid_until"];
+const QUOTE_FIELDS = [
+  "id", "number", "client_id", "status_id", "amount", "date", "valid_until", "po_number", "is_deleted",
+];
 const PAYMENT_FIELDS = ["id", "number", "client_id", "amount", "applied", "date", "type_id"];
 const PRODUCT_FIELDS = ["id", "product_key", "notes", "price", "cost", "quantity"];
 const EXPENSE_FIELDS = [

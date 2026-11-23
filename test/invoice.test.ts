@@ -22,6 +22,12 @@ before(async () => {
     req.on("end", () => {
       res.setHeader("Content-Type", "application/json");
       const path = (req.url ?? "").split("?")[0]!;
+      if (req.method === "GET" && (path === "/api/v1/invoices" || path === "/api/v1/quotes")) {
+        const row = { id: "d1", number: "", client_id: "client1", status_id: "1", amount: 120, date: "2026-11-18",
+          valid_until: "2026-12-18", due_date: "2026-12-18", balance: 120, po_number: "REF-9", is_deleted: true,
+          private_notes: "not in the list" };
+        return res.end(JSON.stringify({ data: [row] }));
+      }
       if (path.startsWith("/api/v1/invoices") || path.startsWith("/api/v1/quotes")) {
         const body = raw ? JSON.parse(raw) : {};
         bodies.push({ method: req.method ?? "", path, body });
@@ -161,5 +167,18 @@ test("safe mode keeps in_quote_action out and in_update_quote in", async () => {
   const names = (await c.listTools()).tools.map((t) => t.name);
   assert.ok(names.includes("in_update_quote"));
   assert.ok(!names.includes("in_quote_action"));
+  await c.close();
+});
+
+test("quote and invoice list rows carry the fields a po_number duplicate guard needs", async () => {
+  const c = await connect();
+  for (const [tool, key] of [["in_list_quotes", "quotes"], ["in_list_invoices", "invoices"]] as const) {
+    const r = (await c.callTool({ name: tool, arguments: { status: "all" } })) as { content: { text: string }[] };
+    const row = (JSON.parse(r.content[0]!.text)[key] as Record<string, unknown>[])[0]!;
+    for (const f of ["id", "number", "status_id", "po_number", "is_deleted"]) assert.ok(f in row, `${tool}: ${f}`);
+    assert.equal(row.po_number, "REF-9");
+    assert.equal(row.is_deleted, true);
+    assert.equal("private_notes" in row, false);
+  }
   await c.close();
 });
